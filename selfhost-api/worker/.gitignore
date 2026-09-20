@@ -1,5 +1,6 @@
 # wrangler local state (emulated D1) and dev server logs
 .wrangler/
 .wrangler-dev*.log
+.contract-run.log
 dist/
 node_modules/

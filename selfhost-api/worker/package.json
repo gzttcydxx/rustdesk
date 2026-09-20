@@ -8,9 +8,11 @@
     "deploy": "wrangler deploy",
     "schema:local": "wrangler d1 execute rustdesk-selfhost-api --local --file=./schema.sql",
     "schema:remote": "wrangler d1 execute rustdesk-selfhost-api --remote --file=./schema.sql",
-    "test": "bash run-contract-test.sh"
+    "test": "bash run-contract-test.sh",
+    "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
+    "typescript": "^5",
     "wrangler": "^4"
   }
 }
