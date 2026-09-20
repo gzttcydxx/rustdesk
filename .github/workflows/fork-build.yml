@@ -2,7 +2,12 @@ name: Fork Build (customization branch)
 
 # Upstream only auto-builds on `master` (see ci.yml / flutter-ci.yml), so pushes
 # to a customization branch get no build at all. This wrapper adds push and
-# manual triggers for that branch and reuses the upstream pipeline unchanged.
+# manual triggers for that branch.
+#
+# It calls `fork-flutter-build.yml`, not upstream's `flutter-build.yml`:
+# workflows a fork inherits from its parent are not registered, so a local
+# `uses:` pointing at them fails at startup (0 jobs). Only files a push
+# introduces on this fork are callable.
 #
 # Signing: this fork has none of the signing secrets (ANDROID_SIGNING_KEY,
 # MACOS_P12_BASE64, SIGN_BASE_URL, ...). The upstream build gates every signing
@@ -22,7 +27,7 @@ on:
 
 jobs:
   build:
-    uses: ./.github/workflows/flutter-build.yml
+    uses: ./.github/workflows/fork-flutter-build.yml
     with:
       upload-artifact: true
       upload-tag: fork
