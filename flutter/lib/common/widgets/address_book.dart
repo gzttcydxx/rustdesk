@@ -20,7 +20,6 @@ import 'package:flex_color_picker/flex_color_picker.dart';
 
 import '../../common.dart';
 import 'dialog.dart';
-import 'login.dart';
 
 final hideAbTagsPanel = false.obs;
 
@@ -39,11 +38,10 @@ class _AddressBookState extends State<AddressBook> {
 
   @override
   Widget build(BuildContext context) => Obx(() {
-        if (!gFFI.userModel.isLogin) {
-          return Center(
-              child: ElevatedButton(
-                  onPressed: loginDialog, child: Text(translate("Login"))));
-        } else if (gFFI.userModel.networkError.isNotEmpty) {
+        // The address book no longer requires an account: the page renders its
+        // full UI for anonymous sessions too, backed by the configured API
+        // server's default (anonymous) address book.
+        if (gFFI.userModel.networkError.isNotEmpty) {
           return netWorkErrorWidget();
         } else {
           return Column(

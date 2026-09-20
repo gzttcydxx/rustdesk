@@ -38,7 +38,7 @@ class GroupModel {
 
   Future<void> pull({force = true, quiet = false}) async {
     if (bind.isDisableGroupPanel()) return;
-    if (!gFFI.userModel.isLogin || groupLoading.value) return;
+    if (groupLoading.value) return;
     if (gFFI.userModel.networkError.isNotEmpty) return;
     if (!force && initialized) return;
     if (!quiet) {
@@ -54,7 +54,7 @@ class GroupModel {
     groupLoading.value = false;
     initialized = true;
     platformFFI.tryHandle({'name': LoadEvent.group});
-    if (_statusCode == 401) {
+    if (_statusCode == 401 && gFFI.userModel.isLogin) {
       gFFI.userModel.reset(resetOther: true);
     } else {
       _saveCache();
@@ -312,8 +312,10 @@ class GroupModel {
     try {
       if (_cacheLoadOnceFlag || groupLoading.value || initialized) return;
       _cacheLoadOnceFlag = true;
+      // An empty token is a valid (anonymous) session: the cache still has to
+      // match the current token, so caches belonging to a signed-in account are
+      // never restored into an anonymous session.
       final access_token = bind.mainGetLocalOption(key: 'access_token');
-      if (access_token.isEmpty) return;
       final cache = await bind.mainLoadGroup();
       if (groupLoading.value) return;
       final data = jsonDecode(cache);

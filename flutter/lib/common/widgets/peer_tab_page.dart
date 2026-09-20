@@ -461,7 +461,7 @@ class _PeerTabPageState extends State<PeerTabPage>
       addressbooks.remove(gFFI.abModel.currentName.value);
     }
     return Offstage(
-      offstage: !gFFI.userModel.isLogin || addressbooks.isEmpty,
+      offstage: addressbooks.isEmpty,
       child: _hoverAction(
         context: context,
         toolTip: translate('Add to address book'),
@@ -478,8 +478,7 @@ class _PeerTabPageState extends State<PeerTabPage>
   Widget editSelectionTags() {
     final model = Provider.of<PeerTabModel>(context);
     return Offstage(
-      offstage: !gFFI.userModel.isLogin ||
-          model.currentTab != PeerTabIndex.ab.index ||
+      offstage: model.currentTab != PeerTabIndex.ab.index ||
           gFFI.abModel.currentAbTags.isEmpty,
       child: _hoverAction(
               context: context,

@@ -86,7 +86,6 @@ class AbModel {
     if (desktopType == DesktopType.main) {
       Timer.periodic(Duration(milliseconds: 500), (timer) async {
         if (_timerCounter++ % 6 == 0) {
-          if (!gFFI.userModel.isLogin) return;
           if (!listInitialized) return;
           if (!current.initialized || !current.canWrite()) return;
           _syncFromRecent();
@@ -120,7 +119,6 @@ class AbModel {
   Future<void> pullAb(
       {required ForcePullAb? force, required bool quiet}) async {
     if (bind.isDisableAb()) return;
-    if (!gFFI.userModel.isLogin) return;
     if (gFFI.userModel.networkError.isNotEmpty) return;
     if (_pulling) return;
     if (force == null && _pulledOnce) {
@@ -222,7 +220,7 @@ class AbModel {
       _listPullError.value =
           '${translate('pull_ab_failed_tip')}: ${translate(err.toString())}';
     }
-    if (statusCode == 401) {
+    if (statusCode == 401 && gFFI.userModel.isLogin) {
       gFFI.userModel.reset(resetOther: true);
     }
   }
@@ -642,8 +640,10 @@ class AbModel {
     try {
       if (_cacheLoadOnceFlag || currentAbLoading.value) return;
       _cacheLoadOnceFlag = true;
+      // An empty token is a valid (anonymous) session: the cache still has to
+      // match the current token, so caches belonging to a signed-in account are
+      // never restored into an anonymous session.
       final access_token = bind.mainGetLocalOption(key: 'access_token');
-      if (access_token.isEmpty) return;
       final cache = await bind.mainLoadAb();
       if (currentAbLoading.value) return;
       final data = jsonDecode(cache);
@@ -1044,7 +1044,9 @@ class LegacyAb extends BaseAb {
       }
     } finally {
       if (pullError.isNotEmpty) {
-        if (statusCode == 401) {
+        // A 401 only means "session expired" for a signed-in user. An
+        // anonymous session must not be logged out / have its models wiped.
+        if (statusCode == 401 && gFFI.userModel.isLogin) {
           gFFI.userModel.reset(resetOther: true);
         }
       }
@@ -1055,7 +1057,6 @@ class LegacyAb extends BaseAb {
   Future<bool> pushAb(
       {bool toastIfFail = true, bool toastIfSucc = true}) async {
     debugPrint("pushAb: toastIfFail:$toastIfFail, toastIfSucc:$toastIfSucc");
-    if (!gFFI.userModel.isLogin) return false;
     pushError.value = '';
     bool ret = false;
     try {
@@ -1488,7 +1489,9 @@ class Ab extends BaseAb {
       }
     } finally {
       if (pullError.isNotEmpty) {
-        if (statusCode == 401) {
+        // A 401 only means "session expired" for a signed-in user. An
+        // anonymous session must not be logged out / have its models wiped.
+        if (statusCode == 401 && gFFI.userModel.isLogin) {
           gFFI.userModel.reset(resetOther: true);
         }
       }
@@ -1535,7 +1538,9 @@ class Ab extends BaseAb {
       }
     } finally {
       if (pullError.isNotEmpty) {
-        if (statusCode == 401) {
+        // A 401 only means "session expired" for a signed-in user. An
+        // anonymous session must not be logged out / have its models wiped.
+        if (statusCode == 401 && gFFI.userModel.isLogin) {
           gFFI.userModel.reset(resetOther: true);
         }
       }
