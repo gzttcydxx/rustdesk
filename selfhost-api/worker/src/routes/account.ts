@@ -10,6 +10,7 @@
  *   POST /api/oidc/auth              start the browser handshake
  *   GET  /api/oidc/auth-query        poll it, once a second
  *   GET|POST /login                  the browser page itself (outside the gate)
+ *   GET|POST /register               self-service sign-up (inside the gate)
  *   POST /api/sysinfo                client pushes its inventory
  *   POST /api/sysinfo_ver            client asks whether it should push again
  *   POST /api/heartbeat              policy / disconnect channel
@@ -24,13 +25,14 @@
  */
 
 import type { AbRow, DeviceRow, Env, StrategyRow, UserRow } from "../env";
-import { SERVER_VERSION, SWITCH_GRANT_SKEW_SECS } from "../env";
+import { ANONYMOUS_USER, SERVER_VERSION, SWITCH_GRANT_SKEW_SECS } from "../env";
 import { userPayload } from "../payload";
 import type { Route } from "../route";
 import {
   anonymous,
   completeOidcSession,
   consumeOidcSession,
+  createAccount,
   createOidcCode,
   issueToken,
   loginDone,
@@ -39,6 +41,9 @@ import {
   oidcSession,
   oidcUrl,
   passwordMatches,
+  registerClosed,
+  registerDone,
+  registerForm,
   requireUser,
   resolveSession,
   revokeToken,
@@ -51,6 +56,7 @@ import {
   getDevice,
   getStrategy,
   getUser,
+  hasAdmin,
   listAbs,
   personalAb,
   queueDeviceCommand,
@@ -238,6 +244,95 @@ export async function loginPage(ctx: Ctx): Promise<Response> {
 
   if (!(await oidcSession(ctx.env, code))) return expired();
   return html(loginForm(code, ""));
+}
+
+// --------------------------------------------------------------------------- //
+// self-service sign-up
+// --------------------------------------------------------------------------- //
+
+/**
+ * Usernames are what the client sends in `POST /api/login`, and they end up as
+ * the account's address-book owner, so the set is kept to what is unambiguous
+ * in a URL, a JSON body and a login form: no spaces, no colons (the password
+ * hash format uses them), and a leading alphanumeric so nothing has to be
+ * escaped. Email addresses fit, which matters because that is what most people
+ * type here.
+ */
+const USERNAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._@+-]{0,63}$/;
+const MIN_PASSWORD_LENGTH = 8;
+
+function registrationOpen(env: Env): boolean {
+  const flag = (env.ALLOW_REGISTER ?? "true").trim().toLowerCase();
+  return !(flag === "false" || flag === "0" || flag === "no");
+}
+
+/**
+ * The sign-up page. Reached at `/register`, or `/<ACCESS_TOKEN>/register` when
+ * the deployment sets a secret — `index.ts` handles it after the gate, so the
+ * secret doubles as the invitation.
+ *
+ * The form posts back to the path it was served from, so the secret prefix
+ * survives the round trip without the page ever having to know its value.
+ */
+export async function registerPage(ctx: Ctx): Promise<Response> {
+  if (!registrationOpen(ctx.env)) return html(registerClosed(), 403);
+
+  // Only a server with no administrator yet can hand one out, which mirrors the
+  // bootstrap rule on `POST /api/users` rather than inventing a second one.
+  const offerAdmin = !(await hasAdmin(ctx.env.DB));
+
+  if (ctx.request.method === "POST") {
+    const form = new URLSearchParams(await ctx.request.text());
+    const username = (form.get("username") ?? "").trim();
+    const email = (form.get("email") ?? "").trim();
+    const password = form.get("password") ?? "";
+    const repeated = form.get("password2") ?? "";
+    const wantsAdmin = form.get("admin") !== null;
+    const view = {
+      action: ctx.path,
+      username,
+      email,
+      offerAdmin,
+      adminChecked: wantsAdmin,
+    };
+    const reject = (error: string, status: number) => html(registerForm({ ...view, error }), status);
+
+    if (!USERNAME_PATTERN.test(username)) {
+      return reject(
+        "Username must be 1-64 characters, start with a letter or digit, and use only letters, digits, . _ @ + -",
+        400,
+      );
+    }
+    if (username.toLowerCase() === ANONYMOUS_USER) return reject("That username is reserved.", 400);
+    if (password.length < MIN_PASSWORD_LENGTH) {
+      return reject(`Password must be at least ${MIN_PASSWORD_LENGTH} characters.`, 400);
+    }
+    if (password !== repeated) return reject("The two passwords do not match.", 400);
+    // Checked before the insert so "taken" is a clear message rather than a
+    // silent no-op: `createAccount` reports it, but it cannot say which field.
+    if (await getUser(ctx.env.DB, username)) return reject("That username is taken.", 409);
+
+    const created = await createAccount(ctx.env, {
+      name: username,
+      displayName: username,
+      email,
+      password,
+      isAdmin: offerAdmin && wantsAdmin,
+    });
+    if (!created) return reject("That username is taken.", 409);
+    return html(registerDone(username));
+  }
+
+  return html(
+    registerForm({
+      action: ctx.path,
+      error: "",
+      username: "",
+      email: "",
+      offerAdmin,
+      adminChecked: offerAdmin,
+    }),
+  );
 }
 
 // --------------------------------------------------------------------------- //

@@ -7,6 +7,8 @@ accessible devices). This one drives everything else the client talks to, plus
 the operator-facing admin surface:
 
     identity      login with a password, currentUser, login-options, logout
+    sign-up       the /register page: validation, the reserved name, the taken
+                  name, and that a registered password is actually enforced
     OIDC          the browser handshake, including the served sign-in page
     shared books  sharing an address book with a user and with everyone, and the
                   read / read-write / full-control rules gating writes
@@ -474,6 +476,59 @@ def run(base: str) -> None:
     status, text, _ = call(base, "POST", "/api/currentUser", {}, token=root_token)
     check(status == 200 and (parsed(text) or {}).get("name") == "anonymous",
           "a revoked token degrades to anonymous rather than 401")
+
+    # ------------------------------------------------------- self-registration
+    print("\n[10] self-registration")
+    # The client has no registration screen, so this page is the only way to
+    # create an account without SQL. `run-contract-test.sh` runs without
+    # ACCESS_TOKEN, so it answers at /register; with a secret set it moves to
+    # /<ACCESS_TOKEN>/register, which test-access-control.sh pins.
+    status, page, _ = call(base, "GET", "/register")
+    check(status == 200 and 'name="password2"' in page, "GET /register serves the sign-up form")
+    check("Administrator" not in page, "no admin offer while an administrator already exists")
+
+    status, _, _ = call(base, "POST", "/register",
+                        {"username": "bad name", "password": "longenough", "password2": "longenough"}, form=True)
+    check(status == 400, "a username with a space is refused")
+    status, _, _ = call(base, "POST", "/register",
+                        {"username": "anonymous", "password": "longenough", "password2": "longenough"}, form=True)
+    check(status == 400, "the reserved anonymous account cannot be claimed")
+    status, _, _ = call(base, "POST", "/register",
+                        {"username": "signup", "password": "short", "password2": "short"}, form=True)
+    check(status == 400, "a password under the minimum length is refused")
+    status, _, _ = call(base, "POST", "/register",
+                        {"username": "signup", "password": "longenough", "password2": "different"}, form=True)
+    check(status == 400, "a password that does not match its confirmation is refused")
+    status, _, _ = call(base, "POST", "/register",
+                        {"username": "root", "password": "longenough", "password2": "longenough"}, form=True)
+    check(status == 409, "an existing username is refused")
+
+    status, page, _ = call(base, "POST", "/register",
+                           {"username": "signup", "password": "signup-pw", "password2": "signup-pw"}, form=True)
+    check(status == 200 and "Account created" in page, "POST /register creates the account")
+
+    status, text, _ = call(base, "POST", "/api/login", {"username": "signup", "password": "signup-pw"})
+    signup_token = (parsed(text) or {}).get("access_token") or ""
+    check(status == 200 and bool(signup_token), "the new account signs in with the password it chose")
+
+    status, _, _ = call(base, "POST", "/api/login", {"username": "signup", "password": "wrong-one"})
+    check(status == 401, "the wrong password is refused")
+
+    status, text, _ = call(base, "POST", "/api/currentUser", {}, token=signup_token)
+    signup = parsed(text) or {}
+    check(status == 200 and signup.get("name") == "signup", "its token names the registered account")
+    check(not signup.get("is_admin"), "a self-registered account is not an administrator")
+
+    # Pinned on purpose: an account is still created on first login, which is
+    # what makes a client with nobody signed in work. Registration does not
+    # replace it, and the two now differ in exactly one way — a name that went
+    # through /register has a password that is checked, one that did not has an
+    # empty `password_hash` and accepts anything.
+    status, text, _ = call(base, "POST", "/api/login", {"username": "walkin", "password": "anything"})
+    check(status == 200 and bool((parsed(text) or {}).get("access_token")),
+          "an unregistered name still signs in with no password (the login-free design)")
+    status, _, _ = call(base, "POST", "/api/login", {"username": "walkin", "password": "another"})
+    check(status == 200, "and keeps accepting any password, since none was ever set")
 
     # Clean up so a rerun starts from the same place.
     call(base, "DELETE", "/api/ab/shared", [book_guid])

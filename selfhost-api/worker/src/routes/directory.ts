@@ -34,6 +34,7 @@ import {
   getOrCreateDeviceGroup,
   getStrategy,
   getUser,
+  hasAdmin,
   listAbs,
   listDeviceGroups,
   listDevices,
@@ -77,13 +78,6 @@ async function accessibleUserNames(ctx: Ctx, user: UserRow): Promise<string[] | 
     names.add(book.user_name);
   }
   return [...names];
-}
-
-/** True once any administrator exists, which closes the bootstrap door. */
-async function hasAdmin(ctx: Ctx): Promise<boolean> {
-  const row = await ctx.env.DB.prepare("SELECT COUNT(*) AS c FROM users WHERE is_admin = 1")
-    .first<{ c: number }>();
-  return Number(row?.c ?? 0) > 0;
 }
 
 function devicePatchFromBody(body: Record<string, unknown>): DevicePatch {
@@ -174,7 +168,7 @@ const peersList: Route["handler"] = async (ctx) => {
  */
 const adminUsersCreate: Route["handler"] = async (ctx) => {
   const body = asRecord(await readJson(ctx.request)) ?? {};
-  const bootstrap = !(await hasAdmin(ctx));
+  const bootstrap = !(await hasAdmin(ctx.env.DB));
 
   let admin: UserRow;
   if (bootstrap) {

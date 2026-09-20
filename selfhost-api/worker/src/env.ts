@@ -63,6 +63,12 @@ export interface Env {
   ACCESS_TOKEN?: string;
   /** "false" makes POST /api/devices/deploy answer `NOT_ENABLED`. */
   ALLOW_DEPLOY?: string;
+  /**
+   * "false" closes the self-service sign-up page. Defaults to on, and the page
+   * sits behind `ACCESS_TOKEN` either way, so this is a second lock rather than
+   * the only one.
+   */
+  ALLOW_REGISTER?: string;
   /** Makes the lazily created `anonymous` account an administrator. */
   ANONYMOUS_ADMIN?: string;
   /** Comma separated SSO button names for `GET /api/login-options`. */

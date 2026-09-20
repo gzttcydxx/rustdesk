@@ -9,7 +9,7 @@ that signs in normally is fully functional against a server you own.
 
 | Area | Endpoints |
 | --- | --- |
-| Identity | `/api/login`, `/api/logout`, `/api/currentUser`, `/api/login-options`, `/api/oidc/auth`, `/api/oidc/auth-query`, `GET|POST /login` |
+| Identity | `/api/login`, `/api/logout`, `/api/currentUser`, `/api/login-options`, `/api/oidc/auth`, `/api/oidc/auth-query`, `GET|POST /login`, `GET|POST /register` |
 | Address book | all 29 `/api/ab*` — personal, settings, shared books, peers, tags, share rules, plus the three legacy whole-document shapes (`GET\|POST /api/ab`, `POST /api/ab/get`) |
 | Devices | `/api/device-group/accessible`, `/api/users`, `/api/peers`, `/api/sysinfo`, `/api/sysinfo_ver`, `/api/heartbeat`, `/api/devices/cli`, `/api/devices/deploy`, `/api/devices/disconnect`, `/api/switch-grant` |
 | Audit | `/api/audit/conn`, `/api/audit/file`, `/api/audit/alarm`, `/api/audit/conn/active`, `PUT|POST /api/audit` |
@@ -44,7 +44,7 @@ JSON shapes, which is what `../selftest.py` checks.
 | `src/env.ts` | bindings, constants (schema revision, TTLs, rule levels), row shapes |
 | `src/schema.ts` | `CREATE_STATEMENTS` (19 tables) and the v2 migration list |
 | `src/store.ts` | every D1 query, one function per operation |
-| `src/auth.ts` | session resolution, password/TOTP checks, OIDC handshake, the `/login` page |
+| `src/auth.ts` | session resolution, password/TOTP checks, OIDC handshake, the `/login` and `/register` pages |
 | `src/util.ts` | request/response helpers, pagination, the `Ctx` type |
 | `src/route.ts` | the route table and matcher (`*` segment, 405 fallback) |
 | `src/payload.ts` | the JSON shapes the client deserialises into |
@@ -54,9 +54,9 @@ JSON shapes, which is what `../selftest.py` checks.
 | `src/routes/ops.ts` | 10 audit / recording routes |
 | `wrangler.toml` | Worker config, D1 binding, `STRICT_AUTH` |
 | `schema.sql` | the same DDL, for applying at deploy time |
-| `api_surface_test.py` | the 101-check surface suite |
+| `api_surface_test.py` | the 115-check surface suite |
 | `run-contract-test.sh` | local end-to-end test against a clean D1 |
-| `test-access-control.sh` | the `ACCESS_TOKEN` gate and the OIDC handshake |
+| `test-access-control.sh` | the `ACCESS_TOKEN` gate (including that `/register` is inside it) and the OIDC handshake |
 | `test-migration.sh` | proves the v2 migration upgrades an *old* database |
 | `legacy-fixture.sql` | the pre-versioning schema shape, for that test |
 | `package.json` | convenience scripts: `dev`, `deploy`, `test`, `typecheck` |
@@ -194,8 +194,36 @@ registering no route at all.
 
 ## Creating the first account
 
-No SQL needed — the Worker bootstraps. While **no administrator exists**, the
-first `POST /api/users` is accepted without a credential:
+**The short way: open the sign-up page.** The official client has no
+registration screen — `common/widgets/login.dart` offers only SSO buttons and a
+username/password form — so account creation has to come from the server. This
+Worker serves one:
+
+```
+https://rd.gzttc.qzz.io/<ACCESS_TOKEN>/register      # secret configured
+http://127.0.0.1:8787/register                       # no secret
+```
+
+`/register` sits **inside** the secret gate, unlike `/login`: the secret that
+authorises the API is also the invitation to create an account on it. That also
+means the page cannot be linked from `/login`, which is served outside the gate
+and would leak the secret in its HTML. Set `ALLOW_REGISTER=false` to close it
+while leaving the gate up.
+
+Two things the page decides for you:
+
+* It shows an **Administrator** checkbox only while no administrator exists,
+  mirroring the bootstrap rule below instead of inventing a second one.
+* It refuses anything the client could not send back: the name must start with a
+  letter or digit and use only `A-Za-z0-9._@+-`, so an email address is fine and
+  a colon is not (the stored hash format uses colons). `anonymous` is reserved,
+  and the password has to be at least 8 characters and entered twice.
+
+The form posts back to the path it was served from, so the secret prefix
+survives the round trip without the page ever being told its value.
+
+**The scripted way: bootstrap `POST /api/users`.** No SQL needed — while **no
+administrator exists**, the first call is accepted without a credential:
 
 ```bash
 curl -X POST http://127.0.0.1:8787/api/users \
@@ -206,12 +234,37 @@ curl -X POST http://127.0.0.1:8787/api/users \
 
 The moment an admin exists the gate closes and every later call needs one. On a
 deployment with `ACCESS_TOKEN` set, put the secret in front:
-`POST /<secret>/api/users`. **The deployed database currently has no accounts at
-all**, so bootstrap is available there. From
+`POST /<secret>/api/users`. From
 then on the sign-in button in the client works: it calls `POST /api/oidc/auth`,
 opens the returned URL in a browser, and that page is served by this Worker
 (`GET|POST /login`). Enter the credentials there and the client collects its
 `access_token` from `GET /api/oidc/auth-query`.
+
+### Registering is not required to use the address book
+
+`POST /api/login` still creates an account on first sight of an unknown name,
+and gives it an **empty** `password_hash`. That is the login-free design: the
+address book and accessible-devices pages work with nobody signed in, and a
+client whose token was revoked carries on instead of having its models wiped.
+The difference between the two paths is exactly one thing:
+
+| | password_hash | who can sign in as it |
+| --- | --- | --- |
+| went through `/register` | `sha256:<salt>:<hex>` | only someone who knows the password |
+| first seen at `/api/login` | `""` | anyone who types that name |
+
+`STRICT_AUTH=true` closes the second path (and rejects anonymous sessions).
+
+### How passwords are stored
+
+`sha256:<salt-b64>:<hex>` — a salted SHA-256, not a stretched KDF. A Worker on
+the free plan gets 10 ms of CPU per request, which a PBKDF2 iteration count
+worth having does not fit inside, so the salt is the part that earns its keep: it
+stops two users with the same password from sharing a hash, and stops a stolen
+table from being swept against precomputed digests. **It does not make a weak
+password strong.** The older unsalted `sha256:<hex>` and a bare literal are both
+still accepted, so the hand-insert recipe below and any account created by an
+older build keep working.
 
 <details>
 <summary>Or insert the account by hand (equivalent)</summary>
@@ -267,6 +320,9 @@ Server box only checks that the value starts with `http(s)://`
 
 * `GET /health` and `GET|POST /login` stay reachable without the secret, so the
   deployment can be probed and a sign-in link can be opened in a browser.
+  `GET|POST /register` does **not** — sign-up is deliberately behind the same
+  secret, at `/<secret>/register`, because account creation is part of the API
+  rather than a public endpoint.
 * Everything else answers `403 forbidden` — including unknown paths, so the gate
   is answered before routing reveals anything about the route table.
 * With `ACCESS_TOKEN` unset the API is open. **The deployed Worker at
@@ -294,8 +350,15 @@ accessible-devices pages work.
 ## Point the client at it
 
 Client → **Settings → Network → API Server**, e.g.
-`https://rd.gzttc.qzz.io`. This is stored as the `api-server` option and can
-also be seeded with the `--api-server` CLI flag.
+`https://rd.gzttc.qzz.io/<ACCESS_TOKEN>`. This is stored as the `api-server`
+option and can also be seeded with the `--api-server` CLI flag. It is the
+address *and* the secret in one box: the client appends `/api/...` to whatever
+is in there.
+
+**Signing in** is a different box: **Settings → Account → Login** (unlabelled
+when signed out, `Logout (<name>)` once in). It calls `POST /api/oidc/auth`,
+opens the returned URL in a browser, and that page is served by this Worker.
+Accounts have to exist before that works — see *Creating the first account*.
 
 Because the endpoint is HTTPS the client needs no extra flags. To use your own
 domain, add a route in `wrangler.toml` (above the D1 table, see above):
@@ -374,6 +437,7 @@ python api_surface_test.py --base-url https://rd.gzttc.qzz.io
 | `DB` | D1 binding | the database |
 | `STRICT_AUTH` | `[vars]` | `"true"` rejects anonymous sessions and unknown logins, like `--strict-auth` on the Python server. Leave it `"false"`. |
 | `ACCESS_TOKEN` | secret | shared secret that must be the first path segment of every request. Unset = open. **Set on the deployed Worker.** See *Access control*. |
+| `ALLOW_REGISTER` | `[vars]` | `"false"` closes the `/register` page (it answers `403`). Defaults to on. The page is behind `ACCESS_TOKEN` either way. |
 | `RECORDS` | R2 binding | optional; enables real recording upload at `/api/record`. Unset, that endpoint answers an explanatory error instead of failing silently. |
 
 ## Limits worth knowing

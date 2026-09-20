@@ -24,6 +24,8 @@ import {
 } from "./store";import {
   type Ctx,
   bearerToken,
+  bytesToBase64,
+  constantTimeEquals,
   escapeHtml,
   fail,
   isResponse,
@@ -42,20 +44,36 @@ export const anonymousIsAdmin = (env: Env): boolean => toBool(env.ANONYMOUS_ADMI
 // passwords
 // --------------------------------------------------------------------------- //
 
+/** Bytes of per-account salt mixed into every stored password hash. */
+const PASSWORD_SALT_BYTES = 16;
+
 /**
- * `sha256:<hex>`. Kept deliberately simple: this is a self-hosted server with
- * no user self-registration, and a dependency-free hash keeps the Worker small.
- * A bare stored value is still compared literally so an account created before
- * hashing existed keeps working.
+ * `sha256:<salt-b64>:<hex>`, or the older unsalted `sha256:<hex>`, or a bare
+ * value compared literally — each still verifiable, so no account is locked out
+ * by a change here.
+ *
+ * Deliberately a fast hash rather than a stretched one. A Worker on the free
+ * plan gets 10 ms of CPU per request, which a KDF heavy enough to matter does
+ * not fit inside, so the salt is the part that earns its keep: it stops two
+ * users with the same password from sharing a hash and stops a stolen table
+ * from being swept against precomputed digests. It does **not** make a weak
+ * password strong, and the stored format says as much — see `README.md`.
  */
 export async function hashPassword(password: string): Promise<string> {
-  return `sha256:${await sha256Hex(password)}`;
+  const salt = bytesToBase64(crypto.getRandomValues(new Uint8Array(PASSWORD_SALT_BYTES)));
+  return `sha256:${salt}:${await sha256Hex(`${salt}:${password}`)}`;
 }
 
 export async function passwordMatches(stored: string, given: string): Promise<boolean> {
   if (!stored) return false;
-  if (!stored.startsWith("sha256:")) return stored === given;
-  return stored === (await hashPassword(given));
+  const [scheme, ...rest] = stored.split(":");
+  if (scheme !== "sha256") return stored === given;
+  if (rest.length === 2) {
+    const digest = `sha256:${rest[0]}:${await sha256Hex(`${rest[0]}:${given}`)}`;
+    return constantTimeEquals(stored, digest);
+  }
+  if (rest.length === 1) return constantTimeEquals(stored, `sha256:${await sha256Hex(given)}`);
+  return false;
 }
 
 // --------------------------------------------------------------------------- //
@@ -356,5 +374,71 @@ export function loginDone(name: string): string {
 <title>Signed in</title><style>${LOGIN_STYLE}</style></head><body><main>
 <h1>Signed in</h1><p>${escapeHtml(name)}</p>
 <p>You can close this tab and return to RustDesk.</p>
+</main></body></html>`;
+}
+
+// --------------------------------------------------------------------------- //
+// the sign-up page
+// --------------------------------------------------------------------------- //
+//
+// The client has no registration screen — `common/widgets/login.dart` only
+// offers SSO buttons and a username/password form — so account creation has to
+// come from the server side. This page is it, and it deliberately sits *inside*
+// the `ACCESS_TOKEN` gate: the same secret that authorises the API authorises
+// creating an account on it. Note that it therefore cannot be linked from
+// `/login`, which is served outside the gate and would leak the secret.
+
+export interface RegisterView {
+  /** Where the form posts back to, which keeps the secret prefix intact. */
+  action: string;
+  error: string;
+  username: string;
+  email: string;
+  /** Only while no administrator exists: the first account may claim it. */
+  offerAdmin: boolean;
+  adminChecked: boolean;
+}
+
+export function registerForm(view: RegisterView): string {
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Create account</title><style>${LOGIN_STYLE}
+label.cb{display:flex;align-items:center;gap:8px;color:#e8eaed}
+label.cb input{width:auto;margin:0}</style></head><body><main>
+<h1>Create account</h1><p>RustDesk self-hosted API</p>
+${view.error ? `<p class="err">${escapeHtml(view.error)}</p>` : ""}
+<form method="post" action="${escapeHtml(view.action)}">
+<label>Username<input name="username" autocomplete="username" value="${escapeHtml(view.username)}" autofocus required></label>
+<label>Email (optional)<input name="email" type="email" autocomplete="email" value="${escapeHtml(view.email)}"></label>
+<label>Password<input name="password" type="password" autocomplete="new-password" required></label>
+<label>Repeat password<input name="password2" type="password" autocomplete="new-password" required></label>
+${
+  view.offerAdmin
+    ? `<label class="cb"><input type="checkbox" name="admin" value="1"${
+        view.adminChecked ? " checked" : ""
+      }>Administrator (no admin exists yet)</label>`
+    : ""
+}
+<button type="submit">Create account</button>
+</form>
+<p>Then sign in from RustDesk: Settings &rarr; Account &rarr; Login.</p>
+</main></body></html>`;
+}
+
+export function registerDone(name: string): string {
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Account created</title><style>${LOGIN_STYLE}</style></head><body><main>
+<h1>Account created</h1><p>${escapeHtml(name)}</p>
+<p>You can now sign in from RustDesk: Settings &rarr; Account &rarr; Login, with
+the username and password you just chose.</p>
+</main></body></html>`;
+}
+
+export function registerClosed(): string {
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Registration closed</title><style>${LOGIN_STYLE}</style></head><body><main>
+<h1>Registration is closed</h1><p>This server does not accept self-service sign-ups.</p>
 </main></body></html>`;
 }

@@ -133,6 +133,12 @@ export async function updateUser(
   return true;
 }
 
+/** True once any administrator exists, which closes the bootstrap door. */
+export async function hasAdmin(db: D1Database): Promise<boolean> {
+  const row = await one<{ c: number }>(db, "SELECT COUNT(*) AS c FROM users WHERE is_admin = 1");
+  return Number(row?.c ?? 0) > 0;
+}
+
 /** Removes the account and everything it owned, so no orphans are left. */
 export async function deleteUsers(db: D1Database, names: string[]): Promise<void> {
   if (names.length === 0) return;

@@ -6,7 +6,8 @@
  * own:
  *
  *   Identity      /api/login, /api/logout, /api/currentUser, /api/login-options,
- *                 /api/oidc/auth, /api/oidc/auth-query, plus the /login page
+ *                 /api/oidc/auth, /api/oidc/auth-query, plus the /login and
+ *                 /register pages
  *   Address book  all of /api/ab*  — personal, shared, peers, tags, share rules,
  *                 and the two legacy whole-document shapes
  *   Devices       /api/device-group/accessible, /api/users, /api/peers,
@@ -23,6 +24,10 @@
  *      devices pages work with nobody signed in.
  *   2. **The store is D1 and the schema is applied lazily.** `wrangler deploy`
  *      is the whole deployment; see `schema.ts` for the migration story.
+ *   3. **`ACCESS_TOKEN` gates everything except a sign-in link.** The client
+ *      puts the secret in the first path segment of its "API Server" option, so
+ *      `/health` and `/login` are the only things served without it. `/register`
+ *      sits inside the gate rather than beside it.
  */
 
 import { ANONYMOUS_USER, SCHEMA_VERSION, SERVER_NAME, SERVER_VERSION, type Env } from "./env";
@@ -30,7 +35,7 @@ import { matchRoute, type Route } from "./route";
 import { CREATE_STATEMENTS, CURRENT_VERSION_STATEMENT, MIGRATIONS_V2 } from "./schema";
 import { requireUser } from "./auth";
 import { abRoutes } from "./routes/ab";
-import { accountRoutes, loginPage } from "./routes/account";
+import { accountRoutes, loginPage, registerPage } from "./routes/account";
 import { directoryRoutes } from "./routes/directory";
 import { opsRoutes } from "./routes/ops";
 import {
@@ -227,6 +232,14 @@ export default {
       }
 
       await ensureSchema(env);
+
+      // Sign-up is a page, not an API route: the client has no registration
+      // screen, so this is the only way to create an account without SQL. It is
+      // handled here, after the gate, which is what makes `ACCESS_TOKEN` the
+      // invitation — `/register` alone answers 403 on a deployment that sets one.
+      if (segments[0] === "register") {
+        return await registerPage(makeCtx(env, request, url, segments, path, []));
+      }
 
       const matched = matchRoute(ROUTES, request.method, segments);
       if (!matched) return fail(404, `not found: ${request.method} ${path}`);

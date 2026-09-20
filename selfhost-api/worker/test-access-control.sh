@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Verify the two access-control layers against a local dev server:
 #
-#   * the ACCESS_TOKEN path-prefix gate
+#   * the ACCESS_TOKEN path-prefix gate, including that the sign-up page is
+#     inside it rather than beside the sign-in page
 #   * the OIDC sign-in handshake the Flutter client drives
 #
 # Nothing here is sent to Cloudflare: `wrangler dev` runs locally and D1 is
@@ -56,6 +57,7 @@ echo "==> running the checks"
 "$PYTHON" - "$BASE" "$SECRET" "$USER_NAME" "$PASSWORD" <<'PY'
 import json
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -149,6 +151,27 @@ ok(status == 200 and json.loads(body).get("name") == user,
 status, body = call("GET", f"/{secret}/api/oidc/auth-query?code={code}&id=1&uuid=u")
 inner = json.loads(json.loads(body)["body"]) if status == 200 else {}
 ok(inner.get("error") == "No authed oidc is found", "a used sign-in link cannot be replayed")
+
+print()
+print("[3] self-registration sits inside the gate, not beside it")
+# The sign-up page is deliberately not a second free endpoint: the secret that
+# authorises the API is also the invitation to create an account on it.
+status, _ = call("GET", "/register")
+ok(status == 403, "GET /register without the secret is refused (403)")
+status, page = call("GET", f"/{secret}/register")
+ok(status == 200 and 'name="password2"' in page, "GET /<secret>/register serves the sign-up form")
+ok("Administrator" not in page, "no admin offer while an administrator exists")
+
+new_user = f"gate-user-{int(time.time())}"
+status, page = call(
+    "POST",
+    f"/{secret}/register",
+    form={"username": new_user, "password": "gate-pass-1", "password2": "gate-pass-1"},
+)
+ok(status == 200 and "Account created" in page, "POST /<secret>/register creates the account")
+status, body = call("POST", f"/{secret}/api/login", {"username": new_user, "password": "gate-pass-1"})
+ok(status == 200 and bool(json.loads(body).get("access_token")),
+   "the registered account signs in through the gate")
 
 print()
 print(f"{checked - failed}/{checked} access-control checks passed")
