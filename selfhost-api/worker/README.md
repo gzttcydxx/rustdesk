@@ -179,8 +179,10 @@ the build before authenticating.
 | --- | --- |
 | Worker | `rustdesk-selfhost-api` (account `0de1162e…`) |
 | URL | `https://rd.gzttc.qzz.io` |
-| D1 | `rustdesk-selfhost-api` → `5b60cd2b-85e6-4e07-91d9-4f04f1028f67` (WNAM) |
+| D1 | `rustdesk-selfhost-api` → `5b60cd2b-85e6-4e07-91d9-4f04f1028f67` (WNAM, primary `SJC`) |
 | Access node | AMS |
+| `ACCESS_TOKEN` | **set** — `/api/*` needs the secret as the first path segment |
+| Schema at deploy | revision 2; `users` 13 columns, 18 tables |
 
 ### Routing gotcha
 
@@ -202,7 +204,10 @@ curl -X POST http://127.0.0.1:8787/api/users \
 # {"name":"me", ..., "is_admin":true, "bootstrapped":true}
 ```
 
-The moment an admin exists the gate closes and every later call needs one. From
+The moment an admin exists the gate closes and every later call needs one. On a
+deployment with `ACCESS_TOKEN` set, put the secret in front:
+`POST /<secret>/api/users`. **The deployed database currently has no accounts at
+all**, so bootstrap is available there. From
 then on the sign-in button in the client works: it calls `POST /api/oidc/auth`,
 opens the returned URL in a browser, and that page is served by this Worker
 (`GET|POST /login`). Enter the credentials there and the client collects its
@@ -262,8 +267,22 @@ Server box only checks that the value starts with `http(s)://`
 
 * `GET /health` and `GET|POST /login` stay reachable without the secret, so the
   deployment can be probed and a sign-in link can be opened in a browser.
-* Everything else answers `403 forbidden`.
-* With `ACCESS_TOKEN` unset (the current state) the API is open.
+* Everything else answers `403 forbidden` — including unknown paths, so the gate
+  is answered before routing reveals anything about the route table.
+* With `ACCESS_TOKEN` unset the API is open. **The deployed Worker at
+  `rd.gzttc.qzz.io` has it set**, so every `/api/*` call there needs the secret
+  as its first path segment.
+
+### The gate runs before the schema bootstrap
+
+`gatePath` is checked before `ensureSchema`, so a `403` short-circuits ahead of
+the migration. On a gated deployment the schema is therefore not brought up to
+date until the first request that actually carries the secret. If you apply a
+schema change to a database behind the gate, either run the migration
+explicitly — `npx wrangler d1 execute … --remote --file=./schema.sql`, plus the
+`MIGRATIONS_V2` statements — or make one authenticated call and check the result.
+`/health` will not do it: it answers before `ensureSchema` too, and reports
+`SCHEMA_VERSION` from the source, not from the database.
 
 ### `STRICT_AUTH` — turn off anonymous sessions
 
@@ -354,7 +373,7 @@ python api_surface_test.py --base-url https://rd.gzttc.qzz.io
 | --- | --- | --- |
 | `DB` | D1 binding | the database |
 | `STRICT_AUTH` | `[vars]` | `"true"` rejects anonymous sessions and unknown logins, like `--strict-auth` on the Python server. Leave it `"false"`. |
-| `ACCESS_TOKEN` | secret | shared secret that must be the first path segment of every request. Unset = open. See *Access control*. |
+| `ACCESS_TOKEN` | secret | shared secret that must be the first path segment of every request. Unset = open. **Set on the deployed Worker.** See *Access control*. |
 | `RECORDS` | R2 binding | optional; enables real recording upload at `/api/record`. Unset, that endpoint answers an explanatory error instead of failing silently. |
 
 ## Limits worth knowing
