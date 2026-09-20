@@ -26,9 +26,11 @@ on:
             required: true
             type: string
             default: 'Windows10'
-  # fork-* copy: entry-point trigger, required for this file to be registered
-  # on the fork at all. `workflow_call` on its own is not enough there, which
-  # made the local `uses:` from fork-flutter-build.yml fail at startup.
+  # fork-* copy: this file is only ever *called*, and on this fork a workflow
+  # file is registered only when a push matches one of its triggers. Push the
+  # branch `ci/register-workflows` once after adding or renaming this file --
+  # that single matching push is what puts it in the registry, without which the
+  # local `uses:` from fork-flutter-build.yml dies at startup with 0 jobs.
   workflow_dispatch:
     inputs:
       upload-artifact:
@@ -46,6 +48,9 @@ on:
       target_version:
         type: string
         default: 'Windows10'
+  push:
+    branches:
+      - "ci/register-workflows"
 
 env:
   project_path: WindowInjection/WindowInjection.vcxproj

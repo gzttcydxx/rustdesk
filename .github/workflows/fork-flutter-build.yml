@@ -1,13 +1,18 @@
 # Verbatim copy of flutter-build.yml. The edits are the two local `uses:`
-# targets, repointed at the fork-* copies below, plus a workflow_dispatch
-# trigger added to the `on:` block.
+# targets, repointed at the fork-* copies below, and an extra push trigger in
+# the `on:` block.
 #
-# Why a copy exists at all: on a fork, a workflow whose only trigger is
-# `workflow_call` never shows up in the Actions registry, so a local
-# `uses: ./.github/workflows/<this file>` from fork-build.yml resolves to
-# nothing and the run dies as startup_failure with 0 jobs. Carrying an
-# entry-point trigger (workflow_dispatch) gets the file registered, and then
-# it can also be called. Verified against the fork's workflow list.
+# Why a copy exists at all: upstream's `flutter-build.yml` cannot be reached by a
+# local `uses:` from this fork. A fork inherits the parent's workflow files but
+# they are not in the fork's Actions registry, and the registry only ever gains
+# a newly added file when a push matches one of its triggers -- `workflow_call`
+# and `workflow_dispatch` do not count. Without a registry entry the call
+# resolves to nothing and the run dies as startup_failure with 0 jobs.
+#
+# So each fork-* file carries a push trigger on the branch
+# `ci/register-workflows`. That branch is pushed once after adding or renaming a
+# file, which is what registers it; it is never pushed otherwise, so the trigger
+# never fires again. Re-push it if a fork-* file is ever renamed.
 #
 # Keep it in sync with upstream by hand.
 name: Build the flutter version of the RustDesk
@@ -21,9 +26,13 @@ on:
       upload-tag:
         type: string
         default: "nightly"
-  # `workflow_call` alone does not get this file registered on a fork, which
-  # makes the local `uses:` from fork-build.yml fail at startup with zero jobs.
-  # An entry-point trigger does. Keep this alongside workflow_call.
+  # See the note at the top of this file: on this fork a workflow file is only
+  # registered once a push matches one of its triggers, and `workflow_call` /
+  # `workflow_dispatch` alone do not register it. This trigger is the
+  # registration mechanism; the branch is otherwise never pushed.
+  push:
+    branches:
+      - "ci/register-workflows"
   workflow_dispatch:
     inputs:
       upload-artifact:

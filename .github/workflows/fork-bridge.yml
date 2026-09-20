@@ -2,12 +2,20 @@
 name: Build flutter-rust-bridge
 # 2023-11-23 18:00:00+00:00
 
-# fork-* copy: the `workflow_dispatch` below is what gets this file registered
-# on the fork. With `workflow_call` alone it is absent from the Actions
-# registry and the local `uses:` from fork-flutter-build.yml fails at startup.
+# fork-* copy: the `push` trigger below exists only to get this file into the
+# fork's Actions registry. Measured on this fork: a newly added workflow file is
+# registered only when a push matches one of its triggers and the workflow is
+# therefore scheduled to run. `workflow_call` and `workflow_dispatch` alone do
+# not register it, so a file that is only ever *called* stays invisible and the
+# local `uses:` from fork-flutter-build.yml dies at startup with 0 jobs.
+# Push the branch `ci/register-workflows` once after adding or renaming this
+# file; it is never pushed otherwise, so this trigger never fires again.
 on:
   workflow_call:
   workflow_dispatch:
+  push:
+    branches:
+      - "ci/register-workflows"
 
 env:
   CARGO_EXPAND_VERSION: "1.0.95"
