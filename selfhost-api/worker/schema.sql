@@ -11,9 +11,16 @@
 -- This is optional: the Worker bootstraps and migrates its own tables on first
 -- use. Applying it up front just makes the first request quiet.
 --
--- The trailing `_meta` upsert records the revision, so a database created from
--- this file is immediately at the current schema revision and the Worker skips
--- the migration path entirely.
+-- NOTE: this file deliberately does NOT seed `_meta.schema_version`.
+--
+-- `CREATE TABLE IF NOT EXISTS` is a no-op on a table that already exists, so if
+-- an older database has a `users` table without the v2 columns, nothing here
+-- adds them. Seeding the version would then tell the Worker's migration gate
+-- (`if (version >= SCHEMA_VERSION) return;`) that there is nothing to do, and
+-- the columns would be missing forever. Leaving `_meta` empty means every
+-- database reads as version 0 and takes the real migration path in
+-- `MIGRATIONS_V2` — which is correct for a fresh database too (the drops only
+-- touch projections that were just created empty).
 
 CREATE TABLE IF NOT EXISTS _meta (
   key TEXT PRIMARY KEY, value TEXT NOT NULL DEFAULT '');
@@ -193,6 +200,5 @@ CREATE INDEX IF NOT EXISTS idx_audit_alarm_created ON audit_alarm (created_at DE
 CREATE INDEX IF NOT EXISTS idx_records_updated ON records (updated_at DESC);
 
 -- -- schema revision ---------------------------------------------------------
--- Must match SCHEMA_VERSION in src/env.ts.
-INSERT INTO _meta (key, value) VALUES ('schema_version', '2')
-  ON CONFLICT(key) DO UPDATE SET value = excluded.value;
+-- Intentionally not seeded — see the note at the top. The Worker writes
+-- `_meta.schema_version` itself after applying the migration.

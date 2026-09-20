@@ -57,6 +57,8 @@ JSON shapes, which is what `../selftest.py` checks.
 | `api_surface_test.py` | the 101-check surface suite |
 | `run-contract-test.sh` | local end-to-end test against a clean D1 |
 | `test-access-control.sh` | the `ACCESS_TOKEN` gate and the OIDC handshake |
+| `test-migration.sh` | proves the v2 migration upgrades an *old* database |
+| `legacy-fixture.sql` | the pre-versioning schema shape, for that test |
 | `package.json` | convenience scripts: `dev`, `deploy`, `test`, `typecheck` |
 
 `src/schema.ts` is the source of truth for the schema, and `schema.sql` mirrors it
@@ -93,6 +95,18 @@ and a fresh database takes the `!initialised` branch.
 A database that predates versioning has no `_meta` row at all, reads as version
 `0`, and therefore receives the full `CREATE_STATEMENTS` on its first request —
 which is why an old deployment picks up new tables without a manual step.
+
+That path is covered by a test, because a fresh database cannot exercise it:
+`bash test-migration.sh` lays down `legacy-fixture.sql` (the old nine-table
+shape), starts the Worker on it, and asserts the columns, tables and existing
+rows all came through.
+
+> **`schema.sql` must not seed `_meta.schema_version`.** It would look like a
+> harmless optimisation, but `CREATE TABLE IF NOT EXISTS` does not add columns to
+> a table that already exists, so seeding the version would tell the gate above
+> that an old database is current and leave those columns missing forever. An
+> empty `_meta` is what makes every database take the migration path. This is
+> why the `INSERT` is absent from `schema.sql`.
 
 ## Local development (no Cloudflare account needed)
 
