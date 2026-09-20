@@ -1,0 +1,16 @@
+{
+  "name": "rustdesk-selfhost-api-worker",
+  "version": "0.1.0",
+  "private": true,
+  "description": "RustDesk-compatible address book / accessible devices API for Cloudflare Workers + D1",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "schema:local": "wrangler d1 execute rustdesk-selfhost-api --local --file=./schema.sql",
+    "schema:remote": "wrangler d1 execute rustdesk-selfhost-api --remote --file=./schema.sql",
+    "test": "bash run-contract-test.sh"
+  },
+  "devDependencies": {
+    "wrangler": "^4"
+  }
+}

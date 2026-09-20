@@ -1,0 +1,5 @@
+# wrangler local state (emulated D1) and build output
+.wrangler/
+.wrangler-dev.log
+dist/
+node_modules/

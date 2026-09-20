@@ -1,0 +1,21 @@
+name = "rustdesk-selfhost-api"
+main = "src/index.ts"
+compatibility_date = "2026-09-20"
+
+# D1 replaces the sqlite3 file the Python server uses.
+#
+# Create the database once and paste its real id here:
+#   npx wrangler d1 create rustdesk-selfhost-api
+#
+# `--local` development works with the placeholder below, so you can run the
+# whole contract test suite before you ever touch a Cloudflare account.
+[[d1_databases]]
+binding = "DB"
+database_name = "rustdesk-selfhost-api"
+database_id = "00000000-0000-0000-0000-000000000000"
+
+[vars]
+# "true" rejects anonymous sessions and unknown logins, like
+# `rustdesk_api_server.py --strict-auth`. Leave it off: anonymous sessions are
+# what makes the login-free address book / accessible devices pages work.
+STRICT_AUTH = "false"

@@ -12,6 +12,13 @@ It is **not** a rendezvous/relay server. Keep running the open-source
 `hbbs`/`hbbr` for ID registration and relaying; this service only serves the
 `/api/*` surface those two pages call.
 
+Two implementations of the same API live here, sharing one contract test suite:
+
+| Implementation | Runtime | Store |
+| --- | --- | --- |
+| [`rustdesk_api_server.py`](rustdesk_api_server.py) | Python 3.9+ stdlib | SQLite file |
+| [`worker/`](worker/) | Cloudflare Workers | D1 |
+
 ## Why it exists
 
 The two pages above are the only parts of the client that talk to an account API.
@@ -40,6 +47,32 @@ Options:
 | `--quiet` | off | disable access logging |
 
 `GET /health` returns a small JSON status document.
+
+## Deploy on Cloudflare Workers (optional)
+
+If you would rather not keep a machine running, the same API is available as a
+Worker with D1 as the store. It needs no server: you get an HTTPS endpoint the
+client can be pointed at directly.
+
+```bash
+cd worker
+npx wrangler login
+npx wrangler d1 create rustdesk-selfhost-api   # paste the id into wrangler.toml
+npx wrangler deploy
+```
+
+Tables are created on first use, so there is no migration step. To try it
+locally with no Cloudflare account at all:
+
+```bash
+npx wrangler dev                     # http://127.0.0.1:8787
+bash run-contract-test.sh            # same 53 checks, against a clean D1
+```
+
+Why the Worker is TypeScript and not the Python file running as-is: Cloudflare's
+Python Workers run on Pyodide, which has no `sqlite3`, so the storage layer has
+to become D1 regardless — and D1 bindings are first-class in TypeScript.
+See [`worker/README.md`](worker/README.md) for the full notes and limits.
 
 ## Point the client at it
 
@@ -104,7 +137,8 @@ reachable device, which is what the *Accessible devices* page lists.
 ## Test
 
 ```bash
-python selftest.py
+python selftest.py                                    # the Python server
+python selftest.py --base-url http://127.0.0.1:8787   # any running server (wrangler dev)
 ```
 
 Starts the server in-process on an ephemeral port, replays the exact call
@@ -113,6 +147,10 @@ the client's parsers (`Peer.fromJson`, `UserPayload.fromJson`,
 `AbProfile.fromJson`, `AbTag.fromJson`, `DeviceGroupPayload.fromJson`), that
 pagination terminates, and that accounts don't leak data into each other.
 Currently 53 checks.
+
+The same suite is the contract between the two implementations: both the Python
+server and the Worker pass all 53. It expects an empty database, so wipe
+`worker/.wrangler/state` before pointing it at a `wrangler dev` instance.
 
 ## Limitations
 

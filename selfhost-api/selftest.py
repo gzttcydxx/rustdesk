@@ -15,11 +15,22 @@ and asserts that every response can be decoded by the client's parsers
 That means: every key the client reads must exist, the top-level json type must
 match (object vs array), and pagination must terminate.
 
+The same suite validates both implementations, since the contract is the
+contract: by default it starts the Python server in-process, and with
+``--base-url`` it tests any already-running server instead — including the
+Cloudflare Worker (``wrangler dev``).
+
+The suite assumes an EMPTY database (it asserts an address book starts at
+total=0). When testing the Worker locally, wipe ``worker/.wrangler/state``
+first, which is what ``worker/run-contract-test.sh`` does.
+
 Run:  python selftest.py
+      python selftest.py --base-url http://127.0.0.1:8787
 """
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import sys
@@ -46,6 +57,22 @@ def check(condition: bool, label: str) -> None:
         FAILURES.append(label)
 
 
+def _decode(raw: str):
+    """Parse a response body, tolerating a non-json one.
+
+    Both servers always answer with json, but when the suite is pointed at a
+    `wrangler dev` port the runtime can answer with a plain-text error page.
+    That is not a contract answer: return None so the individual check fails
+    with its status code instead of blowing up the whole run.
+    """
+    if not raw.strip():
+        return None
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+
+
 def request(base: str, method: str, path: str, body=None, token: str = ""):
     """Mirror the Flutter client's http usage: Content-Type json, Bearer token."""
     data = None
@@ -57,11 +84,9 @@ def request(base: str, method: str, path: str, body=None, token: str = ""):
     req = urllib.request.Request(base + path, data=data, headers=headers, method=method)
     try:
         with urllib.request.urlopen(req, timeout=10) as resp:
-            raw = resp.read().decode("utf-8")
-            return resp.status, (json.loads(raw) if raw.strip() else None)
+            return resp.status, _decode(resp.read().decode("utf-8", "replace"))
     except urllib.error.HTTPError as exc:
-        raw = exc.read().decode("utf-8")
-        return exc.code, (json.loads(raw) if raw.strip() else None)
+        return exc.code, _decode(exc.read().decode("utf-8", "replace"))
 
 
 # ---- client-side parsers, mirrored from the Dart models ------------------- #
@@ -251,20 +276,34 @@ def run(base: str) -> None:
     check(status == 200 and out.get("server") == "rustdesk-selfhost-api", "GET /health -> 200")
 
 
-def main() -> int:
-    tmp = tempfile.mkdtemp(prefix="rd-api-selftest-")
-    db = os.path.join(tmp, "api.db")
-    server = build_server("127.0.0.1", 0, db, strict_auth=False, quiet=True)
-    port = server.server_address[1]
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-    base = f"http://127.0.0.1:{port}"
-    print(f"server up on {base} (db={db})")
-    try:
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Contract self-test for the RustDesk self-hosted API.")
+    parser.add_argument(
+        "--base-url",
+        default="",
+        help="test an already-running server instead of the in-process Python one, "
+        "e.g. http://127.0.0.1:8787 for `wrangler dev`",
+    )
+    args = parser.parse_args(argv)
+
+    if args.base_url:
+        base = args.base_url.rstrip("/")
+        print(f"testing external server on {base} (database must be empty)")
         run(base)
-    finally:
-        server.shutdown()
-        server.server_close()
+    else:
+        tmp = tempfile.mkdtemp(prefix="rd-api-selftest-")
+        db = os.path.join(tmp, "api.db")
+        server = build_server("127.0.0.1", 0, db, strict_auth=False, quiet=True)
+        port = server.server_address[1]
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        base = f"http://127.0.0.1:{port}"
+        print(f"server up on {base} (db={db})")
+        try:
+            run(base)
+        finally:
+            server.shutdown()
+            server.server_close()
 
     print("\n" + "=" * 62)
     if FAILURES:
