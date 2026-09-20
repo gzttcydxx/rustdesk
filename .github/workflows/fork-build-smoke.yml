@@ -1,0 +1,17 @@
+name: Fork Build Smoke
+
+# Temporary probe: proves whether this fork can run *any* workflow at all.
+# Delete once the real build workflow is confirmed working.
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - "feat/no-login-address-book"
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - name: actions are alive on this fork
+        run: echo "fork actions are alive"
