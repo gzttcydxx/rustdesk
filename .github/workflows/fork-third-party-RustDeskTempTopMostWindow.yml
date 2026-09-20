@@ -26,6 +26,26 @@ on:
             required: true
             type: string
             default: 'Windows10'
+  # fork-* copy: entry-point trigger, required for this file to be registered
+  # on the fork at all. `workflow_call` on its own is not enough there, which
+  # made the local `uses:` from fork-flutter-build.yml fail at startup.
+  workflow_dispatch:
+    inputs:
+      upload-artifact:
+        type: boolean
+        default: true
+      target:
+        type: string
+        default: 'windows-2022'
+      configuration:
+        type: string
+        default: 'Release'
+      platform:
+        type: string
+        default: 'x64'
+      target_version:
+        type: string
+        default: 'Windows10'
 
 env:
   project_path: WindowInjection/WindowInjection.vcxproj
