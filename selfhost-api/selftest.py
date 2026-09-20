@@ -22,10 +22,15 @@ Cloudflare Worker (``wrangler dev``).
 
 The suite assumes an EMPTY database (it asserts an address book starts at
 total=0). When testing the Worker locally, wipe ``worker/.wrangler/state``
-first, which is what ``worker/run-contract-test.sh`` does.
+first, which is what ``worker/run-contract-test.sh`` does. Against a deployed
+Worker, clear the D1 tables first:
+
+  npx wrangler d1 execute rustdesk-selfhost-api --remote \\
+      --command "DELETE FROM ab_peers; DELETE FROM ab_tags; ..."
 
 Run:  python selftest.py
       python selftest.py --base-url http://127.0.0.1:8787
+      python selftest.py --base-url https://rd.gzttc.qzz.io
 """
 
 from __future__ import annotations
@@ -73,17 +78,32 @@ def _decode(raw: str):
         return None
 
 
+# urllib's default `Python-urllib/3.x` is rejected by Cloudflare's browser
+# integrity check (HTTP 403, "error code: 1010") before the request ever reaches
+# a Worker and is proxied. That check is a zone setting, not part of this API,
+# so send a plain descriptive agent and keep the contract test about the
+# contract. The Flutter client's own `Dart/x (dart:io)` passes it too.
+USER_AGENT = "rustdesk-selftest/1.0"
+
+# Against 127.0.0.1 the whole suite finishes in well under a second per call, so
+# the value only matters for `--base-url` runs. urllib opens a fresh TLS
+# connection per request and a handshake to a distant Cloudflare colo has been
+# measured at ~2.5s, so a tight timeout turns ordinary network jitter into a
+# spurious read timeout part-way through the suite.
+TIMEOUT = 30
+
+
 def request(base: str, method: str, path: str, body=None, token: str = ""):
     """Mirror the Flutter client's http usage: Content-Type json, Bearer token."""
     data = None
-    headers = {"Content-Type": "application/json"}
+    headers = {"Content-Type": "application/json", "User-Agent": USER_AGENT}
     if body is not None:
         data = json.dumps(body).encode("utf-8")
     if token:
         headers["Authorization"] = f"Bearer {token}"
     req = urllib.request.Request(base + path, data=data, headers=headers, method=method)
     try:
-        with urllib.request.urlopen(req, timeout=10) as resp:
+        with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
             return resp.status, _decode(resp.read().decode("utf-8", "replace"))
     except urllib.error.HTTPError as exc:
         return exc.code, _decode(exc.read().decode("utf-8", "replace"))

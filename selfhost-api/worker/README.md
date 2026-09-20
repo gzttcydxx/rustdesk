@@ -59,31 +59,86 @@ npx wrangler d1 create rustdesk-selfhost-api
 Copy the `database_id` it prints into `wrangler.toml`, then:
 
 ```bash
+npx wrangler d1 execute rustdesk-selfhost-api --remote --file=./schema.sql
 npx wrangler deploy
 ```
 
-The Worker creates its tables on first use, so there is no migration step. If
-you prefer to run the schema explicitly:
-
-```bash
-npx wrangler d1 execute rustdesk-selfhost-api --remote --file=./schema.sql
-```
+The Worker also creates its tables on first use (`CREATE TABLE IF NOT EXISTS`),
+so the `d1 execute` step is optional — it just makes the first request quiet.
 
 `wrangler deploy --dry-run` bundles without uploading — useful to sanity-check
 the build before authenticating.
 
+### This fork's deployment
+
+| | |
+| --- | --- |
+| Worker | `rustdesk-selfhost-api` (account `0de1162e…`) |
+| URL | `https://rd.gzttc.qzz.io` |
+| D1 | `rustdesk-selfhost-api` → `5b60cd2b-85e6-4e07-91d9-4f04f1028f67` (WNAM) |
+| Access node | AMS |
+
+### Routing gotcha
+
+`routes` must sit **above** the `[[d1_databases]]` table in `wrangler.toml`. In
+TOML a bare key following a table header belongs to that table, so a `routes`
+line placed after it is parsed as `d1_databases[0].routes` and wrangler warns
+`Unexpected fields found in d1_databases[0] field: "routes"` while silently
+registering no route at all.
+
 ## Point the client at it
 
 Client → **Settings → Network → API Server**, e.g.
-`https://rustdesk-selfhost-api.<your-subdomain>.workers.dev`.
+`https://rd.gzttc.qzz.io`. This is stored as the `api-server` option and can
+also be seeded with the `--api-server` CLI flag.
 
 Because the endpoint is HTTPS the client needs no extra flags. To use your own
-domain, add a route in `wrangler.toml`:
+domain, add a route in `wrangler.toml` (above the D1 table, see above):
 
 ```toml
 routes = [
   { pattern = "rustdesk-api.example.com", custom_domain = true }
 ]
+```
+
+`custom_domain = true` makes Cloudflare create the DNS record and issue the
+certificate, so no CNAME has to be added by hand.
+
+## Cloudflare edge gotchas
+
+**Browser integrity check blocks `Python-urllib`.** `selftest.py` sends
+`rustdesk-selftest/1.0` because the urllib default is rejected by the zone with
+
+```
+HTTP/1.1 403 Forbidden
+Content-Type: text/plain
+error code: 1010
+```
+
+That answer comes from Cloudflare's edge, not from this Worker (`src/index.ts`
+contains no User-Agent logic at all) — the request never reaches it. Measured
+against `rd.gzttc.qzz.io`:
+
+| User-Agent | Result |
+| --- | --- |
+| `Python-urllib/3.13` | 403 (`error code: 1010`) |
+| `python-requests/2.32.3` | 200 |
+| `Dart/3.9 (dart:io)` | 200 |
+| `Mozilla/5.0`, `curl/8.0` | 200 |
+
+The Flutter client sends a `Dart/…` agent, so it is unaffected. If you add
+another machine client, give it a non-`urllib` agent — or exempt the hostname
+from Bot Fight Mode.
+
+**The suite is sensitive to database state.** It asserts an address book starts
+at `total=0`, so clear the tables before a run against a deployment:
+
+```bash
+npx wrangler d1 execute rustdesk-selfhost-api --remote -y --command \
+  "DELETE FROM ab_peers; DELETE FROM ab_tags; DELETE FROM address_books; \
+   DELETE FROM devices; DELETE FROM device_groups; DELETE FROM audit_notes; \
+   DELETE FROM tokens; DELETE FROM users;"
+python ../selftest.py --base-url https://rd.gzttc.qzz.io
 ```
 
 ## Configuration
