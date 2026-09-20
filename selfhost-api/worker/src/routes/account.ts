@@ -289,7 +289,6 @@ export async function registerPage(ctx: Ctx): Promise<Response> {
     const repeated = form.get("password2") ?? "";
     const wantsAdmin = form.get("admin") !== null;
     const view = {
-      action: ctx.path,
       username,
       email,
       offerAdmin,
@@ -325,7 +324,6 @@ export async function registerPage(ctx: Ctx): Promise<Response> {
 
   return html(
     registerForm({
-      action: ctx.path,
       error: "",
       username: "",
       email: "",

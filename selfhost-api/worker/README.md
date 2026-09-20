@@ -210,6 +210,10 @@ means the page cannot be linked from `/login`, which is served outside the gate
 and would leak the secret in its HTML. Set `ALLOW_REGISTER=false` to close it
 while leaving the gate up.
 
+The form carries no `action` attribute, so it posts back to the URL it was
+served from — the one already holding the secret. Naming that URL in the markup
+would write the secret into the page body for no benefit.
+
 Two things the page decides for you:
 
 * It shows an **Administrator** checkbox only while no administrator exists,

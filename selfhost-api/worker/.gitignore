@@ -1,6 +1,11 @@
 # wrangler local state (emulated D1) and dev server logs
 .wrangler/
 .wrangler-dev*.log
-.contract-run.log
+# captured output of the test suites
+.*-run.log
+# `wrangler deploy --dry-run --outdir=/x` is read as a *relative* path on
+# Windows, so it lands in ./tmp/x rather than at the drive root. Keep the
+# bundle out of commits either way.
+tmp/
 dist/
 node_modules/

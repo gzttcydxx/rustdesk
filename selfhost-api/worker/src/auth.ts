@@ -389,8 +389,6 @@ export function loginDone(name: string): string {
 // `/login`, which is served outside the gate and would leak the secret.
 
 export interface RegisterView {
-  /** Where the form posts back to, which keeps the secret prefix intact. */
-  action: string;
   error: string;
   username: string;
   email: string;
@@ -407,7 +405,11 @@ label.cb{display:flex;align-items:center;gap:8px;color:#e8eaed}
 label.cb input{width:auto;margin:0}</style></head><body><main>
 <h1>Create account</h1><p>RustDesk self-hosted API</p>
 ${view.error ? `<p class="err">${escapeHtml(view.error)}</p>` : ""}
-<form method="post" action="${escapeHtml(view.action)}">
+<!-- No action attribute: the form posts back to the URL it was served from,
+     which is what carries the secret prefix. Naming that URL here would spell
+     the secret out in the markup for no gain, since the page already sits
+     inside the gate. -->
+<form method="post">
 <label>Username<input name="username" autocomplete="username" value="${escapeHtml(view.username)}" autofocus required></label>
 <label>Email (optional)<input name="email" type="email" autocomplete="email" value="${escapeHtml(view.email)}"></label>
 <label>Password<input name="password" type="password" autocomplete="new-password" required></label>
