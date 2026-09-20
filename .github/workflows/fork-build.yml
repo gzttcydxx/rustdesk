@@ -4,16 +4,17 @@ name: Fork Build (customization branch)
 # to a customization branch get no build at all. This wrapper adds push and
 # manual triggers for that branch.
 #
-# It calls `fork-flutter-build.yml`, not upstream's `flutter-build.yml`:
-# workflows a fork inherits from its parent are not registered, so a local
-# `uses:` pointing at them fails at startup (0 jobs). Only files a push
-# introduces on this fork are callable.
+# It calls `fork-flutter-build.yml` rather than upstream's `flutter-build.yml`.
+# A fork inherits the parent's workflow files but they are not in the fork's
+# Actions registry, so a local `uses:` pointing at them dies at startup with 0
+# jobs. The fork-* copies were introduced here to fix that; see docs/FORK-CI.md
+# for the registry rules and for how to re-register a renamed file.
 #
 # Signing: this fork has none of the signing secrets (ANDROID_SIGNING_KEY,
 # MACOS_P12_BASE64, SIGN_BASE_URL, ...). The upstream build gates every signing
 # step on those being present, so signing is skipped rather than failing and
 # only unsigned artifacts are produced. Configure the secrets on the fork to
-# get signed builds.
+# get signed builds. `secrets: inherit` is what carries them once they exist.
 #
 # This builds every platform upstream supports (Windows, Linux, Android, iOS,
 # macOS, AppImage, Flatpak) and takes a long time. Drop `upload-artifact` to
@@ -27,7 +28,22 @@ on:
 
 jobs:
   build:
+    # The called pipeline has jobs that request `contents: write` (generate-sbom)
+    # and jobs that publish a release. A reusable workflow can never hold more
+    # than the caller grants, and this fork's repo default is `read`, so without
+    # this the call is rejected before it starts:
+    #
+    #   The nested job 'generate-sbom' is requesting 'contents: write',
+    #   but is only allowed 'contents: read'.
+    #
+    # Upstream's callers (flutter-nightly.yml, flutter-tag.yml) omit this because
+    # the upstream repo default is already `write`. `contents` is the only scope
+    # any job in the called tree asks for, so granting just that keeps the rest
+    # of the fork's workflows on the read-only default.
+    permissions:
+      contents: write
     uses: ./.github/workflows/fork-flutter-build.yml
+    secrets: inherit
     with:
       upload-artifact: true
       upload-tag: fork

@@ -21,6 +21,36 @@ files have to be re-copied by hand.
 `fork-flutter-build.yml` builds every platform upstream supports (Windows,
 Linux, Android, iOS, macOS, AppImage, Flatpak). It is long: expect hours.
 
+## Permissions
+
+`fork-build.yml` sets `permissions: contents: write` on the job that calls the
+pipeline. Without it the run dies at startup, before any job is created:
+
+```
+Invalid workflow file: .github/workflows/fork-build.yml#L29
+The workflow is not valid. (Line: 29, Col: 3): Error calling workflow
+'.../fork-flutter-build.yml@<sha>'. The nested job 'generate-sbom' is requesting
+'contents: write', but is only allowed 'contents: read'.
+```
+
+A reusable workflow can never hold more than the caller grants. The called
+pipeline's `generate-sbom` job requests `contents: write`, and it also publishes
+a release, but this fork's repository default for `GITHUB_TOKEN` is `read`:
+`gh api repos/gzttcydxx/rustdesk/actions/permissions/workflow` returns
+`{"default_workflow_permissions":"read"}`. Upstream's callers
+(`flutter-nightly.yml`, `flutter-tag.yml`) carry no `permissions` key because
+the upstream repo default is already `write`.
+
+`contents` is the only scope any job in the called tree asks for, so granting
+just that keeps every other workflow in the fork on the read-only default. If
+you would rather not touch the workflow file, the equivalent fix is to set the
+repository default instead:
+
+```sh
+gh api -X PUT repos/gzttcydxx/rustdesk/actions/permissions/workflow \
+  -f default_workflow_permissions=write
+```
+
 ## Signing
 
 This fork has none of the signing secrets upstream uses
