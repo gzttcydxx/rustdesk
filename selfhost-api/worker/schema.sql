@@ -73,6 +73,16 @@ CREATE TABLE IF NOT EXISTS audit_notes (
     updated_at REAL NOT NULL
 );
 
+-- One row per pending sign-in link. `authed` flips to 1 when the browser
+-- submits a valid username/password, and the row is deleted once the client
+-- has collected its access token. Rows older than 30 minutes are ignored.
+CREATE TABLE IF NOT EXISTS oidc_sessions (
+    code       TEXT PRIMARY KEY,
+    user_name  TEXT NOT NULL DEFAULT '',
+    authed     INTEGER NOT NULL DEFAULT 0,
+    created_at REAL NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_ab_peers_guid ON ab_peers (guid, updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_devices_user ON devices (user_name, updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_address_books_user ON address_books (user_name, kind);

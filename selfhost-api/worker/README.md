@@ -25,10 +25,10 @@ bindings are first-class there.
 | `run-contract-test.sh` | local end-to-end test against a clean D1 |
 | `package.json` | convenience scripts |
 
-The Worker applies the schema itself on the first request of each isolate
-(`CREATE TABLE IF NOT EXISTS`), so a fresh database works with no migration
-step. `schema.sql` is there for anyone who prefers explicit migrations; both are
-idempotent.
+`schema.sql` is the source of truth: applying it at deploy time is the whole
+migration story. The Worker can also bootstrap a database that has never been
+initialised (local `wrangler dev`, a brand-new D1), but it probes with a single
+`SELECT 1 FROM users LIMIT 1` first — see *Why the first request used to be slow*.
 
 ## Local development (no Cloudflare account needed)
 
@@ -86,6 +86,59 @@ line placed after it is parsed as `d1_databases[0].routes` and wrangler warns
 `Unexpected fields found in d1_databases[0] field: "routes"` while silently
 registering no route at all.
 
+## Access control
+
+By default the API answers anyone who knows the hostname, so there are two
+independent things to turn on.
+
+### A shared secret in the URL (recommended, no client change)
+
+```bash
+openssl rand -hex 24                # or any 40+ character random string
+npx wrangler secret put ACCESS_TOKEN
+```
+
+Every request must then carry the secret as its **first path segment**. Set the
+client's API Server to `https://rd.gzttc.qzz.io/<the secret>` and nothing else
+changes: the client builds every URL as `<api server>/api/...`, and its API
+Server box only checks that the value starts with `http(s)://`
+(`flutter/lib/common.dart`), so a path is accepted.
+
+* `GET /health` and `GET|POST /login` stay reachable without the secret, so the
+  deployment can be probed and a sign-in link can be opened in a browser.
+* Everything else answers `403 forbidden`.
+* With `ACCESS_TOKEN` unset (the current state) the API is open.
+
+### Real sign-in (makes the address book yours instead of the shared `anonymous`)
+
+Create the account first; the password is stored as `sha256:<hex>`:
+
+```bash
+python -c "import hashlib;print('sha256:'+hashlib.sha256(b'YOUR_PASSWORD').hexdigest())"
+npx wrangler d1 execute rustdesk-selfhost-api --remote -y --command \
+  "INSERT INTO users (name, display_name, avatar, email, note, is_admin, status, password_hash, created_at) \
+   VALUES ('you','you','','','',1,1,'sha256:...', strftime('%s','now')) \
+   ON CONFLICT(name) DO UPDATE SET password_hash=excluded.password_hash;"
+```
+
+The client's sign-in button now works. It calls `POST /api/oidc/auth`, opens the
+returned URL in the browser, and that page is served by this Worker
+(`GET|POST /login`). Enter the credentials there and the client collects its
+`access_token` from `GET /api/oidc/auth-query`.
+
+Things that matter if you edit this code — all four are easy to get wrong:
+
+* `POST /api/oidc/auth` returns `{code, url}` as the **top-level** body; the Rust
+  side deserialises the whole body into `OidcAuthUrl`, it is not wrapped in
+  `data`.
+* `GET /api/oidc/auth-query` returns `{"body": "<json string>"}`. Before anyone
+  signs in, the inner JSON must be exactly
+  `{"error":"No authed oidc is found"}` — that string is what the client treats
+  as "keep polling".
+* The inner `user` object must contain `info`; `UserPayload.info` is not an
+  `Option` in `src/hbbs_http/account.rs`.
+* A sign-in link is valid for 30 minutes and is deleted the moment it is used.
+
 ## Point the client at it
 
 Client → **Settings → Network → API Server**, e.g.
@@ -103,6 +156,21 @@ routes = [
 
 `custom_domain = true` makes Cloudflare create the DNS record and issue the
 certificate, so no CNAME has to be added by hand.
+
+## Why the first request used to be slow
+
+`ensureSchema` originally ran all thirteen `CREATE TABLE` / `CREATE INDEX`
+statements on the first request of every new isolate. Thirteen serial D1 round
+trips put the first response at 1–3s and, when D1 was slow, past the client's
+12-second request timeout (`src/common.rs::post_request_`), which surfaced as:
+
+```
+Failed to parse response.
+reqwest::Error kind: Request, url: "https://…/api/ab/personal", source: TimedOut
+```
+
+It now probes with one `SELECT 1 FROM users LIMIT 1` and only falls back to the
+DDL when that fails — i.e. for a database that has never been initialised.
 
 ## Cloudflare edge gotchas
 
@@ -146,7 +214,8 @@ python ../selftest.py --base-url https://rd.gzttc.qzz.io
 | Name | Where | Meaning |
 | --- | --- | --- |
 | `DB` | D1 binding | the database |
-| `STRICT_AUTH` | `[vars]` | `"true"` rejects anonymous sessions and unknown logins, like `--strict-auth` on the Python server. Leave it `"false"` — anonymous sessions are the whole point. |
+| `STRICT_AUTH` | `[vars]` | `"true"` rejects anonymous sessions and unknown logins, like `--strict-auth` on the Python server. Leave it `"false"` — anonymous sessions are what makes the login-free pages work. |
+| `ACCESS_TOKEN` | secret | shared secret that must be the first path segment of every request. Unset = open. See *Access control*. |
 
 ## Differences from the Python server
 
@@ -159,9 +228,13 @@ Behaviour is identical; only the runtime-specific parts differ.
 | Strict auth | `--strict-auth` flag | `STRICT_AUTH` var |
 | Anonymous account | created at startup | created lazily per request |
 | Bound address | `--host`/`--port` | Workers route |
+| Access gate | — | `ACCESS_TOKEN` path prefix |
+| Sign-in (OIDC) | — | `POST /api/oidc/auth`, `GET /login` |
 
-Both implementations accept the same requests and return byte-identical JSON
-shapes, which is what the shared contract suite checks.
+For the 19 shared routes both implementations accept the same requests and return
+byte-identical JSON shapes, which is what the shared contract suite checks
+(`../selftest.py`, 53 checks, green on both). The access gate and the sign-in
+endpoints are Worker-only.
 
 ## Limits worth knowing
 

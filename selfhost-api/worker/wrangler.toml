@@ -27,3 +27,12 @@ database_id = "5b60cd2b-85e6-4e07-91d9-4f04f1028f67"
 # `rustdesk_api_server.py --strict-auth`. Leave it off: anonymous sessions are
 # what makes the login-free address book / accessible devices pages work.
 STRICT_AUTH = "false"
+
+# ACCESS_TOKEN is deliberately not set here. It is the shared secret that every
+# API request must carry as its first path segment, and it belongs in a secret
+# rather than in git:
+#
+#   npx wrangler secret put ACCESS_TOKEN
+#
+# Then set the client's API Server to `https://rd.gzttc.qzz.io/<the secret>`.
+# While it is unset the API is open to anyone who knows the hostname.

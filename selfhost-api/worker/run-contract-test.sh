@@ -3,7 +3,7 @@
 #
 # It starts `wrangler dev` (local mode, no Cloudflare account required), waits
 # for /health, then runs the same ../selftest.py the Python server passes. The
-# local D1 is wiped first because the suite asserts an empty address book.
+# local D1 is cleared first because the suite asserts an empty address book.
 #
 # Usage:  bash run-contract-test.sh
 #
@@ -17,8 +17,13 @@ PYTHON="${PYTHON:-python3}"
 LOG=".wrangler-dev.log"
 BASE="http://127.0.0.1:${PORT}"
 
-echo "==> wiping local D1 state"
-rm -rf .wrangler/state
+echo "==> clearing the local D1 tables"
+# Clear rows rather than deleting .wrangler/state: a state directory holding a
+# lot of files trips the environment's bulk-delete guard, and the suite only
+# needs the rows gone.
+npx --yes wrangler d1 execute rustdesk-selfhost-api --local -y --file=./schema.sql >/dev/null
+npx --yes wrangler d1 execute rustdesk-selfhost-api --local -y --command \
+  "DELETE FROM ab_peers; DELETE FROM ab_tags; DELETE FROM address_books; DELETE FROM devices; DELETE FROM device_groups; DELETE FROM audit_notes; DELETE FROM tokens; DELETE FROM oidc_sessions; DELETE FROM users;" >/dev/null
 
 echo "==> starting wrangler dev on ${BASE}"
 npx --yes wrangler dev --port "$PORT" --ip 127.0.0.1 >"$LOG" 2>&1 &

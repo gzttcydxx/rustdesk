@@ -51,6 +51,15 @@ export interface Env {
   DB: D1Database;
   /** "true"/"1" rejects anonymous sessions and unknown logins. */
   STRICT_AUTH?: string;
+  /**
+   * Shared secret that must be the first path segment of every request.
+   * Set with `wrangler secret put ACCESS_TOKEN`; when unset the API is open.
+   *
+   * A path in the client's "API Server" option is accepted (`common.dart` only
+   * checks that it starts with http/https), so this needs no client change:
+   * enter `https://<host>/<ACCESS_TOKEN>`.
+   */
+  ACCESS_TOKEN?: string;
 }
 
 // --------------------------------------------------------------------------- //
@@ -638,6 +647,9 @@ const SCHEMA_STATEMENTS: string[] = [
      PRIMARY KEY (user_name, id))`,
   `CREATE TABLE IF NOT EXISTS audit_notes (
      guid TEXT PRIMARY KEY, note TEXT NOT NULL DEFAULT '', updated_at REAL NOT NULL)`,
+  `CREATE TABLE IF NOT EXISTS oidc_sessions (
+     code TEXT PRIMARY KEY, user_name TEXT NOT NULL DEFAULT '',
+     authed INTEGER NOT NULL DEFAULT 0, created_at REAL NOT NULL)`,
   `CREATE INDEX IF NOT EXISTS idx_ab_peers_guid ON ab_peers (guid, updated_at DESC)`,
   `CREATE INDEX IF NOT EXISTS idx_devices_user ON devices (user_name, updated_at DESC)`,
   `CREATE INDEX IF NOT EXISTS idx_address_books_user ON address_books (user_name, kind)`,
@@ -645,9 +657,26 @@ const SCHEMA_STATEMENTS: string[] = [
 
 let schemaReady: Promise<void> | null = null;
 
+/**
+ * Create the tables, but only when they are actually missing.
+ *
+ * Normally the tables were created at deploy time with
+ * `wrangler d1 execute --file=./schema.sql`, so the probe below is what every
+ * request pays. Running the thirteen DDL statements unconditionally was paid by
+ * the first request of every new isolate, and thirteen serial D1 round trips
+ * are slow enough that the client's 12s timeout (`common.rs::post_request_`)
+ * eventually started firing.
+ */
 function ensureSchema(env: Env): Promise<void> {
   if (schemaReady === null) {
     schemaReady = (async () => {
+      try {
+        await env.DB.prepare("SELECT 1 FROM users LIMIT 1").run();
+        return;
+      } catch {
+        // A database that was never initialised (local `wrangler dev`, or a
+        // freshly created D1): bootstrap it.
+      }
       for (const statement of SCHEMA_STATEMENTS) {
         await env.DB.prepare(statement).run();
       }
@@ -793,7 +822,7 @@ const login: Handler = async (ctx) => {
   if (row === null) {
     if (strictAuth(ctx.env)) return fail(401, "Invalid username or password");
     row = await ensureUser(ctx.env.DB, username, username);
-  } else if (row.password_hash && row.password_hash !== password) {
+  } else if (row.password_hash && !(await passwordMatches(row.password_hash, password))) {
     return fail(401, "Invalid username or password");
   }
 
@@ -813,6 +842,170 @@ const logout: Handler = async (ctx) => {
 };
 
 const loginOptions: Handler = async () => send([]);
+
+// -- endpoints: oidc login -------------------------------------------------- //
+//
+// The Flutter client signs in with an OIDC-style handshake, see
+// src/hbbs_http/account.rs:
+//
+//   1. POST /api/oidc/auth        -> {code, url}. The whole response body is
+//                                    deserialised into `OidcAuthUrl`, so it is
+//                                    NOT wrapped in `data`.
+//   2. the user opens `url` in a browser and signs in
+//   3. GET  /api/oidc/auth-query  once a second until it yields an access
+//                                    token, wrapped as {"body": "<json>"}
+//
+// `url` points back at this Worker, so a self-hosted deployment serves the
+// sign-in screen itself instead of delegating to a third party.
+
+interface OidcSessionRow {
+  code: string;
+  user_name: string;
+  authed: number;
+  created_at: number;
+}
+
+/** A pending sign-in link stops working after this long. */
+const OIDC_TTL_SECS = 30 * 60;
+
+function html(body: string, status = 200): Response {
+  return new Response(body, {
+    status,
+    headers: { "Content-Type": "text/html; charset=utf-8", ...CORS_HEADERS },
+  });
+}
+
+function escapeHtml(value: string): string {
+  const map: Record<string, string> = {
+    "&": "&amp;",
+    "<": "&lt;",
+    ">": "&gt;",
+    '"': "&quot;",
+    "'": "&#39;",
+  };
+  return value.replace(/[&<>"']/g, (c) => map[c] ?? c);
+}
+
+async function sha256Hex(value: string): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
+  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+/**
+ * Compare a stored password against a supplied one.
+ *
+ * Rows are written as `sha256:<hex>` by the snippet in README.md. A bare value
+ * is still compared literally, so a database created before hashing existed
+ * keeps working.
+ */
+async function passwordMatches(stored: string, given: string): Promise<boolean> {
+  if (!stored) return false;
+  if (!stored.startsWith("sha256:")) return stored === given;
+  return stored === `sha256:${await sha256Hex(given)}`;
+}
+
+async function oidcSession(ctx: Ctx, code: string): Promise<OidcSessionRow | null> {
+  if (!code) return null;
+  const row = await ctx.env.DB.prepare("SELECT * FROM oidc_sessions WHERE code = ?")
+    .bind(code)
+    .first<OidcSessionRow>();
+  if (!row || nowSec() - row.created_at > OIDC_TTL_SECS) return null;
+  return row;
+}
+
+const oidcAuth: Handler = async (ctx) => {
+  const code = newId();
+  await ctx.env.DB.prepare(
+    "INSERT INTO oidc_sessions (code, user_name, authed, created_at) VALUES (?, '', 0, ?)",
+  )
+    .bind(code, nowSec())
+    .run();
+  return send({ code, url: `${ctx.url.origin}/login?code=${code}` });
+};
+
+const oidcAuthQuery: Handler = async (ctx) => {
+  const code = ctx.url.searchParams.get("code") ?? "";
+  const row = await oidcSession(ctx, code);
+  const user = row && row.authed ? await getUser(ctx.env.DB, row.user_name) : null;
+  if (!user) {
+    // The client keeps polling only while it sees exactly this message.
+    return send({ body: JSON.stringify({ error: "No authed oidc is found" }) });
+  }
+  const token = await newToken(ctx.env.DB, user.name);
+  await ctx.env.DB.prepare("DELETE FROM oidc_sessions WHERE code = ?").bind(code).run();
+  return send({
+    body: JSON.stringify({
+      access_token: token,
+      type: "access_token",
+      tfa_type: "",
+      secret: "",
+      // `info` is not optional in the Rust `UserPayload`, so it is always sent.
+      user: { ...userPayload(user), info: {} },
+    }),
+  });
+};
+
+const LOGIN_STYLE = `body{margin:0;min-height:100vh;display:grid;place-items:center;
+background:#15171c;color:#e8eaed;font:15px/1.5 system-ui,-apple-system,Segoe UI,sans-serif}
+main{width:min(360px,90vw);padding:32px;background:#1e2128;border:1px solid #2c3038;border-radius:12px}
+h1{margin:0 0 4px;font-size:20px}p{margin:0 0 20px;color:#9aa0a6;font-size:13px}
+p.err{color:#f28b82}label{display:block;margin-bottom:14px;font-size:13px;color:#9aa0a6}
+input{display:block;width:100%;box-sizing:border-box;margin-top:6px;padding:9px 10px;
+background:#15171c;border:1px solid #3c4043;border-radius:8px;color:#e8eaed;font-size:15px}
+button{width:100%;padding:10px;margin-top:6px;border:0;border-radius:8px;
+background:#8ab4f8;color:#202124;font-size:15px;font-weight:600;cursor:pointer}`;
+
+function loginForm(code: string, error: string): string {
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Sign in</title><style>${LOGIN_STYLE}</style></head><body><main>
+<h1>Sign in</h1><p>RustDesk self-hosted API</p>
+${error ? `<p class="err">${escapeHtml(error)}</p>` : ""}
+<form method="post" action="/login">
+<input type="hidden" name="code" value="${escapeHtml(code)}">
+<label>Username<input name="username" autocomplete="username" autofocus required></label>
+<label>Password<input name="password" type="password" autocomplete="current-password" required></label>
+<button type="submit">Sign in</button>
+</form></main></body></html>`;
+}
+
+function loginDone(name: string): string {
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Signed in</title><style>${LOGIN_STYLE}</style></head><body><main>
+<h1>Signed in</h1><p>${escapeHtml(name)}</p>
+<p>You can close this tab and return to RustDesk.</p>
+</main></body></html>`;
+}
+
+/**
+ * Serves the sign-in screen. Reached from the browser through a one-off code,
+ * so it is the one path that stays outside the secret gate.
+ */
+const loginPage: Handler = async (ctx) => {
+  let code = ctx.url.searchParams.get("code") ?? "";
+  if (ctx.request.method === "POST") {
+    const form = new URLSearchParams(await ctx.request.text());
+    code = form.get("code") ?? code;
+    if (!(await oidcSession(ctx, code))) {
+      return html(loginForm("", "This sign-in link has expired. Start again from the client."), 400);
+    }
+    const username = (form.get("username") ?? "").trim();
+    const password = form.get("password") ?? "";
+    const row = await getUser(ctx.env.DB, username);
+    if (!row || !(await passwordMatches(row.password_hash, password))) {
+      return html(loginForm(code, "Invalid username or password."), 401);
+    }
+    await ctx.env.DB.prepare("UPDATE oidc_sessions SET user_name = ?, authed = 1 WHERE code = ?")
+      .bind(row.name, code)
+      .run();
+    return html(loginDone(row.display_name || row.name));
+  }
+  if (!(await oidcSession(ctx, code))) {
+    return html(loginForm("", "This sign-in link has expired. Start again from the client."), 400);
+  }
+  return html(loginForm(code, ""));
+};
 
 const audit: Handler = async (ctx) => {
   const user = await requireUser(ctx);
@@ -1065,6 +1258,8 @@ const SIMPLE_ROUTES: Record<string, Handler> = {
   "POST currentUser": currentUserEndpoint,
   "POST logout": logout,
   "GET login-options": loginOptions,
+  "POST oidc/auth": oidcAuth,
+  "GET oidc/auth-query": oidcAuthQuery,
   "PUT audit": audit,
   "POST ab/personal": abPersonal,
   "POST ab/shared/profiles": abSharedProfiles,
@@ -1109,11 +1304,30 @@ function resolveHandler(ctx: Ctx): Handler | null {
   return SIMPLE_ROUTES[`${ctx.request.method} ${route.join("/")}`] ?? null;
 }
 
+/**
+ * Enforce the shared secret carried in the first path segment.
+ *
+ * The client's "API Server" option accepts a path, so the secret rides there
+ * with no client change: `https://<host>/<ACCESS_TOKEN>`. Returns the path with
+ * the secret removed, or the response to send instead. `/health` stays open so
+ * the deployment can be probed.
+ */
+function gatePath(env: Env, segments: string[]): string[] | Response {
+  const secret = (env.ACCESS_TOKEN ?? "").trim();
+  if (!secret) return segments;
+  if (segments[0] === secret) return segments.slice(1);
+  if (segments.length === 0 || segments[0] === "health") return segments;
+  return new Response("forbidden", {
+    status: 403,
+    headers: { "Content-Type": "text/plain; charset=utf-8", ...CORS_HEADERS },
+  });
+}
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
     const path = url.pathname.replace(/\/+$/, "") || "/";
-    const segments = url.pathname
+    let segments = url.pathname
       .split("/")
       .filter(Boolean)
       .map((s) => decodeURIComponent(s));
@@ -1121,6 +1335,16 @@ export default {
     if (request.method === "OPTIONS") {
       return new Response(null, { status: 204, headers: CORS_HEADERS });
     }
+
+    // The sign-in screen is opened from a browser via a one-off code, so it is
+    // the only endpoint outside the secret gate.
+    if (segments[0] === "login") {
+      return loginPage({ env, request, url, segments, path });
+    }
+
+    const gated = gatePath(env, segments);
+    if (gated instanceof Response) return gated;
+    segments = gated;
 
     const ctx: Ctx = { env, request, url, segments, path };
     try {

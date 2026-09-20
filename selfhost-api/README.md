@@ -58,15 +58,19 @@ client can be pointed at directly.
 cd worker
 npx wrangler login
 npx wrangler d1 create rustdesk-selfhost-api   # paste the id into wrangler.toml
+npx wrangler d1 execute rustdesk-selfhost-api --remote --file=./schema.sql
+npx wrangler secret put ACCESS_TOKEN           # optional, recommended
 npx wrangler deploy
 ```
 
-Tables are created on first use, so there is no migration step. To try it
-locally with no Cloudflare account at all:
+`schema.sql` is the migration step. The Worker can bootstrap a database that was
+never initialised, but it probes first instead of running DDL on every cold
+start. To try it locally with no Cloudflare account at all:
 
 ```bash
 npx wrangler dev                     # http://127.0.0.1:8787
 bash run-contract-test.sh            # same 53 checks, against a clean D1
+bash test-access-control.sh          # secret gate + sign-in flow, 15 checks
 ```
 
 Why the Worker is TypeScript and not the Python file running as-is: Cloudflare's
@@ -91,6 +95,29 @@ Client → **Settings → Network → API Server**, e.g. `http://192.168.1.10:21
 * An invalid/expired token degrades to the anonymous session rather than
   returning 401, so the client never bounces the user to a login prompt.
 
+### Signing in as a real account (Worker only)
+
+The Worker implements the client's OIDC-style sign-in, so a password-protected
+account can be created and the client can log in normally:
+
+```bash
+python -c "import hashlib;print('sha256:'+hashlib.sha256(b'YOUR_PASSWORD').hexdigest())"
+npx wrangler d1 execute rustdesk-selfhost-api --remote -y --command \
+  "INSERT INTO users (name, display_name, avatar, email, note, is_admin, status, password_hash, created_at) \
+   VALUES ('you','you','','','',1,1,'sha256:...', strftime('%s','now')) \
+   ON CONFLICT(name) DO UPDATE SET password_hash=excluded.password_hash;"
+```
+
+`POST /api/oidc/auth` hands the client a URL, the browser opens it, the Worker
+serves the form at `/login`, and the client collects its token from
+`GET /api/oidc/auth-query`. Passwords are stored as `sha256:<hex>`; a bare value
+is still compared literally, so older databases keep working.
+
+There is also an optional gate: with `ACCESS_TOKEN` set, **every** request must
+carry that secret as its first path segment, so the client's API Server becomes
+`https://host/<secret>`. `/health` and `/login` stay reachable without it. See
+[`worker/README.md`](worker/README.md) → *Access control*.
+
 ## API implemented
 
 ### Identity
@@ -100,7 +127,9 @@ Client → **Settings → Network → API Server**, e.g. `http://192.168.1.10:21
 | POST | `/api/login` | → `{type:"access_token", access_token, user}` |
 | POST | `/api/currentUser` | Bearer token → user payload |
 | POST | `/api/logout` | drops the token |
-| GET | `/api/login-options` | → `[]` (no OIDC) |
+| GET | `/api/login-options` | → `[]`; only the client's TLS probe reads it |
+| POST | `/api/oidc/auth` | Worker only — starts a browser sign-in, → `{code, url}` |
+| GET | `/api/oidc/auth-query` | Worker only — polls a sign-in, → `{"body": "<json>"}` |
 | PUT | `/api/audit` | `{guid, note}` — connection-end note |
 
 ### Address book
@@ -149,8 +178,12 @@ pagination terminates, and that accounts don't leak data into each other.
 Currently 53 checks.
 
 The same suite is the contract between the two implementations: both the Python
-server and the Worker pass all 53. It expects an empty database, so wipe
-`worker/.wrangler/state` before pointing it at a `wrangler dev` instance.
+server and the Worker pass all 53. It expects an empty database, so clear the
+tables before pointing it at a live deployment.
+
+`worker/test-access-control.sh` covers what the shared suite cannot — the
+`ACCESS_TOKEN` gate and the sign-in handshake (15 checks, local only, no
+Cloudflare account needed).
 
 ## Limitations
 
