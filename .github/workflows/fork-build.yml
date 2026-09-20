@@ -1,0 +1,38 @@
+name: Fork Build (customization branch)
+
+# Upstream only auto-builds on `master` (see ci.yml / flutter-ci.yml), so pushes
+# to a customization branch get no build at all. This wrapper adds push and
+# manual triggers for that branch and reuses the upstream pipeline unchanged.
+#
+# Signing: this fork has none of the signing secrets (ANDROID_SIGNING_KEY,
+# MACOS_P12_BASE64, SIGN_BASE_URL, ...). The upstream build gates every signing
+# step on those being present, so signing is skipped rather than failing and
+# only unsigned artifacts are produced. Configure the secrets on the fork to
+# get signed builds.
+#
+# This builds every platform upstream supports (Windows, Linux, Android, iOS,
+# macOS, AppImage, Flatpak) and takes a long time. Drop `upload-artifact` to
+# false, or trim the called workflow, if you only need one platform.
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - "feat/no-login-address-book"
+    paths-ignore:
+      - "docs/**"
+      - "README.md"
+      - "selfhost-api/**"
+
+# A newer push supersedes an in-flight build.
+concurrency:
+  group: fork-build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    uses: ./.github/workflows/flutter-build.yml
+    with:
+      upload-artifact: true
+      upload-tag: fork
+    secrets: inherit
